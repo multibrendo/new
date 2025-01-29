@@ -1,0 +1,116 @@
+/**
+ * Generates a Google Ads Performance Max placement report and saves it to a Google Sheet.
+ * This script retrieves data for both Display and Performance Max placements, 
+ * Created by Gemini
+ *
+ */
+
+// Define the URL for the Google Sheet. If left empty, a new sheet will be created.
+const SHEET_URL = ''; // Replace with your Google Sheet URL or leave empty to create a new one.
+
+function main() {
+  const spreadsheet = getOrCreateSpreadsheet();
+
+  const queries = {
+    Display: `
+      SELECT
+        detail_placement_view.display_name,
+        detail_placement_view.group_placement_target_url,
+        detail_placement_view.placement,
+        detail_placement_view.placement_type,
+        detail_placement_view.resource_name,
+        detail_placement_view.target_url,
+        metrics.impressions,
+        metrics.cost_micros,
+        metrics.conversions,
+        campaign.name
+      FROM detail_placement_view
+      WHERE segments.date DURING LAST_7_DAYS
+        AND metrics.impressions > 1000 // Adjust threshold as needed
+      ORDER BY campaign.name
+    `,
+    Placements: `
+      SELECT
+        performance_max_placement_view.display_name,
+        performance_max_placement_view.placement,
+        performance_max_placement_view.placement_type,
+        performance_max_placement_view.resource_name,
+        performance_max_placement_view.target_url,
+        campaign.name,
+        metrics.impressions
+      FROM performance_max_placement_view
+      WHERE segments.date DURING LAST_7_DAYS
+        AND metrics.impressions > 0
+      ORDER BY campaign.name
+    `
+  };
+
+  const apiVersions = ['v18']; // Specified the API versions to use
+
+  for (const queryName in queries) {
+    for (const version of apiVersions) {
+      processQuery(queryName, queries[queryName], spreadsheet, version);
+    }
+  }
+
+  Logger.log('Placement report generation completed.');
+}
+
+
+/**
+ * Retrieves an existing spreadsheet or creates a new one if the URL is not provided.
+ * @returns {Spreadsheet} The Spreadsheet object.
+ */
+function getOrCreateSpreadsheet() {
+  if (SHEET_URL) {
+    try {
+      return SpreadsheetApp.openByUrl(SHEET_URL);
+    } catch (error) {
+      Logger.log(`Error opening spreadsheet at ${SHEET_URL}: ${error}`);
+      return createNewSpreadsheet(); // Create a new spreadsheet if URL is invalid
+    }
+  } else {
+    return createNewSpreadsheet();
+  }
+}
+
+/**
+ * Creates a new spreadsheet.
+ * @returns {Spreadsheet} The newly created Spreadsheet object.
+ */
+function createNewSpreadsheet() {
+  const newSpreadsheet = SpreadsheetApp.create('Google Ads Performance Max Placements Report');
+  Logger.log(`New spreadsheet created: ${newSpreadsheet.getUrl()}`);
+  return newSpreadsheet;
+}
+
+
+/**
+ * Processes a single query and exports the results to a sheet.
+ * @param {string} queryName The name of the query.
+ * @param {string} query The AWQL query string.
+ * @param {Spreadsheet} spreadsheet The Spreadsheet object.
+ * @param {string} version The Google Ads API version.
+ */
+function processQuery(queryName, query, spreadsheet, version) {
+  try {
+    Logger.log(`Running ${queryName} query (${version})...`);
+
+    const sheetName = `${queryName}_${version}`;
+    let sheet = spreadsheet.getSheetByName(sheetName);
+
+    if (sheet) {
+      sheet.clearContents(); // Clear existing data
+    } else {
+      sheet = spreadsheet.insertSheet(sheetName);
+    }
+
+    const report = AdsApp.report(query, { apiVersion: version });
+    report.exportToSheet(sheet);
+
+    Logger.log(`${queryName} query (${version}) completed.`);
+
+  } catch (error) {
+    Logger.log(`Error running ${queryName} query (${version}): ${error}`);
+  }
+}
