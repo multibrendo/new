@@ -1,0 +1,226 @@
+// Telegram Settings
+const TELEGRAM_BOT_TOKEN = ""; // Enter your Telegram bot token
+const TELEGRAM_CHAT_ID = "";     // Enter the chat ID where messages will be sent
+
+// ROAS Analysis Settings
+const DAYS_TO_ANALYZE = 7;
+// const DEVIATION_THRESHOLD = 1;
+
+function main() {
+  const accountName = AdsApp.currentAccount().getName();
+  const accountCurrency = AdsApp.currentAccount().getCurrencyCode();
+  Logger.log("Account Name: " + accountName);
+  Logger.log("Account Currency: " + accountCurrency);
+
+  const roasData = fetchROASData(DAYS_TO_ANALYZE);
+  Logger.log("ROAS Data: " + JSON.stringify(roasData));
+
+  const totalCost = roasData.totalCost;
+  const totalConversionValue = roasData.totalConversionValue;
+  const currentROAS = totalCost > 0.1 ? (totalConversionValue / totalCost) * 100 : 0;
+  Logger.log("Current ROAS (last " + DAYS_TO_ANALYZE + " days): " + currentROAS.toFixed(2) + "%");
+  Logger.log("Total Cost (last " + DAYS_TO_ANALYZE + " days): " + totalCost.toFixed(2) + " " + accountCurrency);
+
+  // const avgROAS = calculateAverageROAS(roasData.campaignROAS);
+  // Logger.log("Average ROAS (based on campaign averages): " + avgROAS.toFixed(2) + "%");
+
+  // const deviationPercentage = calculateROASDeviation(roasData.campaignROAS, avgROAS);
+  // Logger.log("ROAS Deviation Percent (from campaign averages): " + deviationPercentage.toFixed(2) + "%");
+
+  const today = new Date();
+  const yesterday = subtractDays(today, 1);
+  const endDateCurrent = formatDate(yesterday);
+  const startDateCurrent = formatDate(subtractDays(yesterday, DAYS_TO_ANALYZE - 1));
+
+  const dayBeforeYesterday = subtractDays(today, 2);
+  const endDatePrevious = formatDate(dayBeforeYesterday);
+  const startDatePrevious = formatDate(subtractDays(dayBeforeYesterday, DAYS_TO_ANALYZE - 1));
+
+  const currentPeriodData = getCostAndConversionsForDateRange(startDateCurrent, endDateCurrent);
+  const previousPeriodData = getCostAndConversionsForDateRange(startDatePrevious, endDatePrevious);
+
+  const currentPeriodCost = currentPeriodData.cost;
+  const previousPeriodCost = previousPeriodData.cost;
+  const currentPeriodConversions = currentPeriodData.conversions;
+  const previousPeriodConversions = previousPeriodData.conversions;
+
+  const currentPeriodCPA = currentPeriodConversions > 0 ? currentPeriodCost / currentPeriodConversions : 0;
+  const previousPeriodCPA = previousPeriodConversions > 0 ? previousPeriodCost / previousPeriodConversions : 0;
+
+  const cpaDifference = currentPeriodCPA - previousPeriodCPA;
+  const cpaDifferencePercentage = previousPeriodCPA !== 0 ? ((cpaDifference / previousPeriodCPA) * 100) : (currentPeriodCPA > 0 ? Infinity : 0);
+  const cpaChangeText = formatCPADifference(cpaDifference, cpaDifferencePercentage, accountCurrency);
+
+  const activeCampaignsWithImpressions = getActiveCampaignNamesWithImpressions(startDateCurrent, endDateCurrent);
+
+  let message = `📊 *ROAS Report for Account: "${accountName}"* 📊\n\n` +
+    `📈 *Account ROAS (last ${DAYS_TO_ANALYZE} days):* ${currentROAS.toFixed(2)}%\n\n` +
+    `💰 *Total Cost (last ${DAYS_TO_ANALYZE} days):* ${totalCost.toFixed(2)} ${accountCurrency}\n\n` +
+    `🎯 *Cost Per Acquisition (CPA) Analysis (${DAYS_TO_ANALYZE} days - ${startDateCurrent} to ${endDateCurrent}):*\n` +
+    `  💲 CPA: ${currentPeriodCPA.toFixed(2)} ${accountCurrency}\n` +
+    `  💲 Previous Period CPA (${startDatePrevious} to ${endDatePrevious}): ${previousPeriodCPA.toFixed(2)} ${accountCurrency}\n` +
+    `  📊 CPA Change: ${cpaChangeText}\n\n`;
+  if (activeCampaignsWithImpressions.length > 0) {
+    message += `✅ *Active Campaigns with Impressions (Last ${DAYS_TO_ANALYZE} days):* ✅\n`;
+    activeCampaignsWithImpressions.forEach(campaignName => {
+      message += `  ➡️ ${campaignName}\n`;
+    });
+  } else {
+    message += `⚠️ *No active campaigns with impressions found in the last ${DAYS_TO_ANALYZE} days.* ⚠️\n`;
+  }
+  message += `\nPlease review the campaign performance.`;
+
+  sendTelegramMessage(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message);
+  Logger.log("ROAS report sent to Telegram.");
+}
+
+function fetchROASData(days) {
+  const query = `
+    SELECT
+      campaign.id,
+      campaign.name,
+      metrics.conversions_value,
+      metrics.cost_micros
+    FROM
+      campaign
+    WHERE
+      segments.date DURING LAST_${days}_DAYS
+      AND campaign.status = 'ENABLED'
+  `;
+
+  const report = AdsApp.report(query);
+  const rows = report.rows();
+  const campaigns = [];
+  let totalCost = 0;
+  let totalConversionValue = 0;
+
+  while (rows.hasNext()) {
+    const row = rows.next();
+    const cost = row['metrics.cost_micros'] / 1000000;
+    const conversionsValue = row['metrics.conversions_value'];
+    const roas = cost > 0 ? conversionsValue / cost : 0;
+
+    campaigns.push({
+      id: row['campaign.id'],
+      name: row['campaign.name'],
+      roas: roas
+    });
+
+    totalCost += cost;
+    totalConversionValue += conversionsValue;
+  }
+
+  return {
+    campaignROAS: campaigns,
+    totalCost: totalCost,
+    totalConversionValue: totalConversionValue
+  };
+}
+
+// function calculateAverageROAS(campaigns) {
+//   if (campaigns.length === 0) return 0;
+//   const totalROAS = campaigns.reduce((sum, campaign) => sum + campaign.roas, 0);
+//   return totalROAS / campaigns.length;
+// }
+
+// function calculateROASDeviation(campaigns, avgROAS) {
+//   if (avgROAS === 0) return 0;
+//   const totalDeviation = campaigns.reduce((sum, campaign) => sum + ((campaign.roas - avgROAS) / avgROAS) * 100, 0);
+//   return totalDeviation / campaigns.length;
+// }
+
+function sendTelegramMessage(botToken, chatId, message) {
+  const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+  const payload = {
+    chat_id: chatId,
+    text: message,
+    parse_mode: "Markdown"
+  };
+
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload)
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(url, options);
+    if (response.getResponseCode() !== 200) {
+      Logger.log("Error sending message: " + response.getContentText());
+    }
+  } catch (error) {
+    Logger.log("Telegram API Error: " + error.toString());
+  }
+}
+
+function getActiveCampaignNamesWithImpressions(startDate, endDate) {
+  const query = `
+    SELECT
+      campaign.name
+    FROM
+      campaign
+    WHERE
+      campaign.status = 'ENABLED'
+      AND segments.date >= '${startDate}'
+      AND segments.date <= '${endDate}'
+      AND metrics.impressions > 0
+  `;
+  const report = AdsApp.report(query);
+  const rows = report.rows();
+  const campaignNames = [];
+  while (rows.hasNext()) {
+    const row = rows.next();
+    campaignNames.push(row['campaign.name']);
+  }
+  return campaignNames;
+}
+
+function formatDate(date) {
+  const year = date.getFullYear();
+  const timeZone = AdsApp.currentAccount().getTimeZone();
+  const month = Utilities.formatDate(date, timeZone, 'MM');
+  const day = Utilities.formatDate(date, timeZone, 'dd');
+  return `${year}-${month}-${day}`;
+}
+
+function subtractDays(date, days) {
+  const newDate = new Date(date);
+  newDate.setDate(date.getDate() - days);
+  return newDate;
+}
+
+function getCostAndConversionsForDateRange(startDate, endDate) {
+  const query = `
+    SELECT
+      metrics.cost_micros,
+      metrics.conversions
+    FROM
+      customer
+    WHERE
+      segments.date >= '${startDate}' AND segments.date <= '${endDate}'
+  `;
+  const report = AdsApp.report(query);
+  const rows = report.rows();
+  let totalCost = 0;
+  let totalConversions = 0;
+  while (rows.hasNext()) {
+    const row = rows.next();
+    totalCost += parseFloat(row['metrics.cost_micros']) / 1000000;
+    totalConversions += parseFloat(row['metrics.conversions']);
+  }
+  return { cost: totalCost, conversions: totalConversions };
+}
+
+function formatCPADifference(difference, percentage, currencyCode) {
+  if (percentage === Infinity) {
+    return `Increased from 0 to ${difference.toFixed(2)} ${currencyCode}`;
+  } else if (percentage === -Infinity) {
+    return `Decreased from ${-difference.toFixed(2)} ${currencyCode} to 0`;
+  } else if (percentage > 0) {
+    return `Increased by ${difference.toFixed(2)} ${currencyCode} (+${percentage.toFixed(2)}%)`;
+  } else if (percentage < 0) {
+    return `Decreased by ${Math.abs(difference).toFixed(2)} ${currencyCode} (${percentage.toFixed(2)}%)`;
+  } else {
+    return `No change (0.00%)`;
+  }
+}
